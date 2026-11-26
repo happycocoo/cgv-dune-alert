@@ -103,7 +103,16 @@ def kakao_access_token():
     }
     if os.environ.get("KAKAO_CLIENT_SECRET"):
         data["client_secret"] = os.environ["KAKAO_CLIENT_SECRET"]
-    r = requests.post("https://kauth.kakao.com/oauth/token", data=data, timeout=20)
+    r = None
+    for attempt in range(3):
+        try:
+            r = requests.post("https://kauth.kakao.com/oauth/token", data=data, timeout=40)
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"kakao token attempt {attempt+1} failed: {e}")
+            if attempt == 2:
+                raise
+    print("kakao token:", r.status_code, r.text[:200] if r.status_code != 200 else "ok")
     r.raise_for_status()
     tok = r.json()
     if "refresh_token" in tok:
@@ -141,6 +150,8 @@ def main():
             (DUMP_DIR / f"{i:02d}.txt").write_text(label + "\n\n" + content, encoding="utf-8")
 
     print(f"sources={len(sources)} hits={hits}")
+    for label, content, _ in sources:
+        print("  -", label[:150], "| len", len(content), "|", re.sub(r"\s+", " ", content[:200]))
     found = bool(hits)
 
     if found:

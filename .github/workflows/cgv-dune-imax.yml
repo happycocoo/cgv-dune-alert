@@ -31,6 +31,13 @@ jobs:
         run: |
           pip install playwright==1.47.0 requests
           python -m playwright install --with-deps chromium
+      - name: Network check
+        if: ${{ inputs.debug }}
+        continue-on-error: true
+        run: |
+          for u in https://kauth.kakao.com https://kapi.kakao.com https://www.cgv.co.kr https://m.cgv.co.kr; do
+            curl -s -o /dev/null -m 20 -w "$u -> %{http_code} (%{time_total}s)\n" "$u" || echo "$u -> FAIL"
+          done
       - name: Check CGV
         id: check
         env:
@@ -42,7 +49,7 @@ jobs:
           DEBUG: ${{ inputs.debug || 'false' }}
         run: python check_cgv.py
       - name: Upload page dump (debug)
-        if: ${{ inputs.debug }}
+        if: ${{ always() && inputs.debug }}
         uses: actions/upload-artifact@v4
         with:
           name: cgv-dump
