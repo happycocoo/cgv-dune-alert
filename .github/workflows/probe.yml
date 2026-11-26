@@ -12,23 +12,23 @@ jobs:
           cat > p.py <<'PY'
           import re
           from playwright.sync_api import sync_playwright
-          urls = [
-            "https://search.naver.com/search.naver?query=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C",
-            "https://m.search.naver.com/search.naver?query=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C",
-            "https://search.daum.net/search?q=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C",
-            "https://www.cgv.co.kr/",
-          ]
+          U = "https://search.naver.com/search.naver?query=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C"
+          def sq(s): return re.sub(r"\s+", " ", s)
           with sync_playwright() as p:
-              b = p.chromium.launch(); pg = b.new_page(locale="ko-KR")
-              for u in urls:
-                  try:
-                      r = pg.goto(u, wait_until="networkidle", timeout=45000)
-                      t = re.sub(r"\s+", " ", pg.inner_text("body"))
-                      i = t.find("상영")
-                      print("=====", u[:60], r.status if r else None, len(t))
-                      print(t[:300]); print("...", t[max(0,i-100):i+900] if i>=0 else "(no 상영)")
-                  except Exception as e:
-                      print("=====", u[:60], "ERR", e)
+              b = p.chromium.launch(); pg = b.new_page(locale="ko-KR", viewport={"width":1400,"height":2000})
+              pg.goto(U, wait_until="networkidle")
+              d = pg.locator("text=11.27(금)").first
+              # climb to date strip container
+              h = d.evaluate("e => { let n=e; for (let i=0;i<6;i++){ n=n.parentElement; } return n.outerHTML }")
+              print("=== DATE STRIP HTML ===\n", sq(h)[:3000])
+              sec = d.evaluate("e => { let n=e; for (let i=0;i<14;i++){ n=n.parentElement; if(n.innerText.includes('상영시간표') && n.innerText.length>500) return n.outerHTML; } return '' }")
+              print("=== SECTION HTML (head) ===\n", sq(sec)[:6000])
+              # click a movie's 상영시간표
+              btn = pg.locator("text=상영시간표").nth(1)
+              try:
+                  btn.click(); pg.wait_for_timeout(2500)
+                  print("=== AFTER CLICK TEXT ===\n", sq(pg.inner_text("body"))[:4000])
+              except Exception as e: print("click err", e)
               b.close()
           PY
           python p.py
