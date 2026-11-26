@@ -1,98 +1,101 @@
-"""CGV 센텀시티 / 듄 파트 3 IMAX / 지정 날짜 예매 오픈 여부를 확인하고 카카오톡(나에게 보내기)으로 알림."""
+"""CGV 센텀시티 / 듄 파트 3 IMAX / 지정 날짜 예매 오픈 여부를 확인하고 카카오톡(나에게 보내기)으로 알림.
+
+CGV 사이트는 해외(GitHub) 서버 접속을 차단하므로, 네이버 검색의 극장 상영시간표(CGV 데이터)를 읽는다.
+"""
 import json
 import os
 import re
 import sys
-from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from playwright.sync_api import sync_playwright
 
-TARGET_DATE = os.environ.get("TARGET_DATE", "20270101")          # YYYYMMDD
-THEATER_CODE = os.environ.get("THEATER_CODE", "0089")            # CGV 센텀시티
-AREA_CODE = os.environ.get("AREA_CODE", "05,207")                # 부산/울산
-MOVIE_KEYWORDS = [k.strip() for k in os.environ.get("MOVIE_KEYWORDS", "듄,Dune").split(",") if k.strip()]
+TARGET_DATE = os.environ.get("TARGET_DATE", "2027-01-01")        # YYYY-MM-DD
+SEARCH_QUERY = os.environ.get("SEARCH_QUERY", "CGV 센텀시티 상영시간표")
+MOVIE_KEYWORDS = [k.strip() for k in os.environ.get("MOVIE_KEYWORDS", "듄").split(",") if k.strip()]
 FORMAT_KEYWORD = os.environ.get("FORMAT_KEYWORD", "IMAX")
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
-DUMP_DIR = Path("dump")
-
-URLS = [
-    f"https://www.cgv.co.kr/common/showtimes/iframeTheater.aspx?areacode={AREA_CODE}&theatercode={THEATER_CODE}&date={TARGET_DATE}",
-    f"https://www.cgv.co.kr/theaters/?areacode={AREA_CODE}&theaterCode={THEATER_CODE}&date={TARGET_DATE}",
-    f"https://m.cgv.co.kr/WebApp/Reservation/Schedule.aspx?tc={THEATER_CODE}&ymd={TARGET_DATE}",
-]
-
-NO_SCHEDULE_PATTERNS = ["상영 스케줄이 없습니다", "상영스케줄이 없습니다", "조회 가능한 상영시간이 없습니다"]
+NOTIFY = os.environ.get("NOTIFY", "true").lower() == "true"
+BOOK_URL = "https://cgv.co.kr/cnm/bzplcCgv/0089001"
+SEARCH_URL = "https://search.naver.com/search.naver?query=" + quote(SEARCH_QUERY)
 
 
-def date_variants(d: str):
-    y, m, dd = d[:4], d[4:6], d[6:]
-    return {d, f"{y}-{m}-{dd}", f"{y}.{m}.{dd}", f"{y}/{m}/{dd}"}
+def sq(s):
+    return re.sub(r"\s+", " ", s or "").strip()
 
 
-def text_matches(text: str) -> bool:
-    has_movie = any(k.lower() in text.lower() for k in MOVIE_KEYWORDS)
-    return has_movie and FORMAT_KEYWORD.lower() in text.lower()
-
-
-def collect_pages():
-    """Playwright로 각 URL을 렌더링하고, 프레임 텍스트/HTML과 XHR JSON 응답을 모은다."""
-    sources = []  # (label, content, is_date_scoped)
+def check():
+    """returns (status, detail). status: 'imax' | 'movie_no_imax' | 'date_no_movie' | 'no_date'"""
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        ctx = browser.new_context(
-            locale="ko-KR",
-            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        ctx = browser.new_context(locale="ko-KR", viewport={"width": 1400, "height": 2200})
+        pg = ctx.new_page()
+        pg.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
+
+        dates = pg.eval_on_selector_all(
+            'a[href*="datefilter="]',
+            "els => els.map(e => [e.getAttribute('href').match(/datefilter%3D([0-9-]+)|datefilter=([0-9-]+)/), e.innerText])",
         )
-        page = ctx.new_page()
-        json_bodies = []
+        date_list = []
+        for m, txt in dates:
+            d = next((x for x in (m or [])[1:] if x), None) if m else None
+            date_list.append(d or txt)
+        print("dates on page:", date_list)
+        if not dates:
+            raise RuntimeError("네이버 상영시간표 날짜 목록을 찾지 못함 (페이지 구조 변경?)")
+        if not any(TARGET_DATE in (d or "") for d in date_list):
+            browser.close()
+            return "no_date", f"날짜 목록: {', '.join(str(d) for d in date_list)}"
 
-        def on_response(resp):
+        # 날짜 클릭 (새 탭으로 가는 기본 동작은 막고 페이지 내 핸들러만 실행)
+        sel = f'a[href*="datefilter%3D{TARGET_DATE}"], a[href*="datefilter={TARGET_DATE}"]'
+        pg.eval_on_selector(sel, "e => { e.addEventListener('click', ev => ev.preventDefault(), {once:true}); e.click(); }")
+        pg.wait_for_timeout(2500)
+        pressed = pg.eval_on_selector(sel, "e => e.getAttribute('aria-pressed')")
+        print("target date pressed:", pressed)
+        if pressed != "true":
+            raise RuntimeError("대상 날짜 선택 실패")
+
+        # 대상 날짜의 영화 목록에서 키워드 영화의 '상영시간표' 펼치기
+        section = pg.locator('a[href*="datefilter"]').first.locator(
+            "xpath=ancestor::*[.//*[contains(text(),'상영시간표')]][1]")
+        sec_text = sq(section.inner_text())
+        if DEBUG:
+            print("SECTION:", sec_text[:1500])
+        if not any(k in sec_text for k in MOVIE_KEYWORDS):
+            # 영화 목록이 '더보기'로 접혀 있을 수 있음
+            more = section.locator("text=더보기")
+            if more.count():
+                try:
+                    more.first.evaluate("e => e.click()")
+                    pg.wait_for_timeout(1500)
+                    sec_text = sq(section.inner_text())
+                except Exception:
+                    pass
+        if not any(k in sec_text for k in MOVIE_KEYWORDS):
+            browser.close()
+            return "date_no_movie", sec_text[:300]
+
+        buttons = section.locator("text=상영시간표")
+        detail = ""
+        for i in range(buttons.count()):
+            btn = buttons.nth(i)
+            block = btn.locator("xpath=ancestor::*[self::li or self::div][.//*[contains(text(),'개봉')]][1]")
             try:
-                ct = resp.headers.get("content-type", "")
-                if "json" in ct:
-                    json_bodies.append((resp.url, resp.text()))
+                bt = sq(block.inner_text())
             except Exception:
-                pass
-
-        page.on("response", on_response)
-        for url in URLS:
-            try:
-                page.goto(url, wait_until="networkidle", timeout=45000)
-                page.wait_for_timeout(2000)
-                for i, fr in enumerate(page.frames):
-                    try:
-                        html = fr.content()
-                    except Exception:
-                        continue
-                    sources.append((f"{url} [frame {i}: {fr.url}]", html, True))
-            except Exception as e:
-                sources.append((f"{url} [ERROR]", f"ERROR: {e}", False))
-        for u, body in json_bodies:
-            sources.append((f"XHR {u}", body, False))
+                continue
+            if any(k in bt for k in MOVIE_KEYWORDS):
+                btn.evaluate("e => e.click()")
+                pg.wait_for_timeout(2000)
+                detail = sq(block.inner_text())
+                break
+        print("movie block:", detail[:800])
         browser.close()
-    return sources
-
-
-def evaluate(sources):
-    dv = date_variants(TARGET_DATE)
-    hits = []
-    for label, content, date_scoped in sources:
-        if content.startswith("ERROR"):
-            continue
-        if not text_matches(content):
-            continue
-        if any(pat in content for pat in NO_SCHEDULE_PATTERNS):
-            continue
-        # 날짜가 실제로 열렸는지: 페이지/응답 안에 대상 날짜가 등장해야 함
-        if not any(v in content for v in dv):
-            continue
-        # 상영시간(HH:MM) 이 함께 있어야 실제 회차로 판단
-        if not re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", content):
-            continue
-        hits.append(label)
-    return hits
+        if FORMAT_KEYWORD.lower() in detail.lower() and re.search(r"\d{1,2}:\d{2}", detail):
+            return "imax", detail
+        return "movie_no_imax", detail
 
 
 def kakao_access_token():
@@ -114,51 +117,52 @@ def kakao_access_token():
                 raise
     print("kakao token:", r.status_code, r.text[:200] if r.status_code != 200 else "ok")
     r.raise_for_status()
-    tok = r.json()
-    if "refresh_token" in tok:
-        print("::warning::카카오 refresh token이 갱신되었습니다. README의 '토큰 갱신' 절차로 KAKAO_REFRESH_TOKEN 시크릿을 업데이트하세요.")
-    return tok["access_token"]
+    if "refresh_token" in r.json():
+        print("::warning::카카오 refresh token이 갱신되었습니다. KAKAO_REFRESH_TOKEN 시크릿을 업데이트하세요.")
+    return r.json()["access_token"]
 
 
-def send_kakao(text: str, link: str):
+def send_kakao(text):
+    if not NOTIFY:
+        print("[NOTIFY=false] would send:", text)
+        return
     token = kakao_access_token()
     template = {
         "object_type": "text",
         "text": text[:200],
-        "link": {"web_url": link, "mobile_web_url": link},
+        "link": {"web_url": BOOK_URL, "mobile_web_url": BOOK_URL},
         "button_title": "CGV 예매하기",
     }
-    r = requests.post(
-        "https://kapi.kakao.com/v2/api/talk/memo/default/send",
-        headers={"Authorization": f"Bearer {token}"},
-        data={"template_object": json.dumps(template, ensure_ascii=False)},
-        timeout=20,
-    )
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"template_object": json.dumps(template, ensure_ascii=False)},
+                timeout=40,
+            )
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"kakao send attempt {attempt+1} failed: {e}")
+            if attempt == 2:
+                raise
     print("kakao:", r.status_code, r.text)
     r.raise_for_status()
 
 
 def main():
-    sources = collect_pages()
-    hits = evaluate(sources)
-    pretty_date = f"{TARGET_DATE[4:6].lstrip('0')}월 {TARGET_DATE[6:].lstrip('0')}일"
-    link = URLS[1]
-
-    if DEBUG:
-        DUMP_DIR.mkdir(exist_ok=True)
-        for i, (label, content, _) in enumerate(sources):
-            (DUMP_DIR / f"{i:02d}.txt").write_text(label + "\n\n" + content, encoding="utf-8")
-
-    print(f"sources={len(sources)} hits={hits}")
-    for label, content, _ in sources:
-        print("  -", label[:150], "| len", len(content), "|", re.sub(r"\s+", " ", content[:200]))
-    found = bool(hits)
-
+    y, m, d = TARGET_DATE.split("-")
+    pretty = f"{int(m)}월 {int(d)}일"
+    status, detail = check()
+    print("STATUS:", status)
+    found = status == "imax"
     if found:
-        send_kakao(f"🎬 예매 오픈!\nCGV 센텀시티 듄: 파트 3 IMAX\n{pretty_date} 회차가 열렸습니다. 지금 예매하세요!", link)
+        times = " ".join(re.findall(r"IMAX[^0-9]*?((?:\d{1,2}:\d{2}\s*)+)", detail, flags=re.I)) or ""
+        send_kakao(f"🎬 예매 오픈!\nCGV 센텀시티 듄: 파트 3 IMAX\n{pretty} 회차가 열렸습니다.\n{times}\n지금 예매하세요!")
     elif DEBUG:
-        errs = sum(1 for _, c, _ in sources if c.startswith("ERROR"))
-        send_kakao(f"[테스트] CGV 체크 동작 중\n{pretty_date} 듄3 IMAX: 아직 미오픈\n수집 {len(sources)}개 / 오류 {errs}개", link)
+        label = {"no_date": "날짜 미오픈", "date_no_movie": "날짜는 열림, 듄 없음",
+                 "movie_no_imax": "듄 있음, IMAX 없음"}.get(status, status)
+        send_kakao(f"[테스트] CGV 체크 정상 동작\n{pretty} 듄3 IMAX: {label}\n(오픈되면 다시 알려드려요)")
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:

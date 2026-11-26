@@ -6,7 +6,20 @@ on:
   workflow_dispatch:
     inputs:
       debug:
-        description: "테스트 모드 (결과와 상관없이 카톡 발송 + 페이지 덤프 저장)"
+        description: "테스트 모드 (결과와 상관없이 카톡 발송)"
+        type: boolean
+        default: true
+      target_date:
+        description: "(테스트용) 확인할 날짜 YYYY-MM-DD"
+        default: "2027-01-01"
+      movie:
+        description: "(테스트용) 영화 키워드"
+        default: "듄"
+      format:
+        description: "(테스트용) 상영관 키워드"
+        default: "IMAX"
+      notify:
+        description: "카톡 발송 여부"
         type: boolean
         default: true
 
@@ -31,31 +44,20 @@ jobs:
         run: |
           pip install playwright==1.47.0 requests
           python -m playwright install --with-deps chromium
-      - name: Network check
-        if: ${{ inputs.debug }}
-        continue-on-error: true
-        run: |
-          for u in https://kauth.kakao.com https://kapi.kakao.com https://www.cgv.co.kr https://m.cgv.co.kr; do
-            curl -s -o /dev/null -m 20 -w "$u -> %{http_code} (%{time_total}s)\n" "$u" || echo "$u -> FAIL"
-          done
       - name: Check CGV
         id: check
         env:
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
           KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
-          TARGET_DATE: "20270101"
-          THEATER_CODE: "0089"
+          TARGET_DATE: ${{ inputs.target_date || '2027-01-01' }}
+          MOVIE_KEYWORDS: ${{ inputs.movie || '듄' }}
+          FORMAT_KEYWORD: ${{ inputs.format || 'IMAX' }}
+          NOTIFY: ${{ inputs.notify == false && 'false' || 'true' }}
           DEBUG: ${{ inputs.debug || 'false' }}
         run: python check_cgv.py
-      - name: Upload page dump (debug)
-        if: ${{ always() && inputs.debug }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: cgv-dump
-          path: dump/
       - name: 알림 보낸 뒤 자동 중지 (중복 알림 방지)
-        if: steps.check.outputs.found == 'true'
+        if: steps.check.outputs.found == 'true' && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow disable "${{ github.workflow }}" --repo "${{ github.repository }}"
