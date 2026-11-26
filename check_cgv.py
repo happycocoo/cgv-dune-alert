@@ -49,12 +49,14 @@ def check():
             return "no_date", f"날짜 목록: {', '.join(str(d) for d in date_list)}"
 
         # 날짜 클릭 (새 탭으로 가는 기본 동작은 막고 페이지 내 핸들러만 실행)
-        sel = f'a[href*="datefilter%3D{TARGET_DATE}"], a[href*="datefilter={TARGET_DATE}"]'
-        pg.eval_on_selector(sel, "e => { e.addEventListener('click', ev => ev.preventDefault(), {once:true}); e.click(); }")
+        idx = next(i for i, d in enumerate(date_list) if TARGET_DATE in (d or ""))
+        label = f"{int(TARGET_DATE[5:7])}.{int(TARGET_DATE[8:10])}("
+        pg.locator('a[href*="datefilter"]').nth(idx).evaluate(
+            "e => { e.addEventListener('click', ev => ev.preventDefault(), {once:true}); e.click(); }")
         pg.wait_for_timeout(2500)
-        pressed = pg.eval_on_selector(sel, "e => e.getAttribute('aria-pressed')")
-        print("target date pressed:", pressed)
-        if pressed != "true":
+        after = pg.eval_on_selector_all('a[href*="datefilter"]', "els => els.map(e => [e.innerText, e.getAttribute('aria-pressed')])")
+        print("after click:", after)
+        if not any(t.startswith(label) and pr == "true" for t, pr in after):
             raise RuntimeError("대상 날짜 선택 실패")
 
         # 대상 날짜의 영화 목록에서 키워드 영화의 '상영시간표' 펼치기
