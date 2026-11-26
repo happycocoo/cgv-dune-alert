@@ -68,7 +68,7 @@ def check():
     halls = text[s1 + len("상영시간표"): s2 if s2 > 0 else len(text)]
     detail = text[i:s1].split("개봉일")[0].strip() + " | " + halls.strip()
     print("movie block:", detail[:800])
-    m = re.search(re.escape(FORMAT_KEYWORD) + r"[^0-9]*((?:\d{1,2}:\d{2}\s*)+)", halls, flags=re.I)
+    m = re.search(re.escape(FORMAT_KEYWORD) + r"[^:]*?((?:\d{1,2}:\d{2}\s*)+)", halls, flags=re.I)
     if m:
         return "imax", m.group(0).strip()
     return "movie_no_imax", detail
