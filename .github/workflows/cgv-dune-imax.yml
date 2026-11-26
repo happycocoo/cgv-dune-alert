@@ -57,7 +57,7 @@ jobs:
           DEBUG: ${{ inputs.debug || 'false' }}
         run: python check_cgv.py
       - name: 알림 보낸 뒤 자동 중지 (중복 알림 방지)
-        if: steps.check.outputs.found == 'true' && github.event_name == 'schedule'
+        if: steps.check.outputs.found == 'true' && inputs.debug != true
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow disable "${{ github.workflow }}" --repo "${{ github.repository }}"
