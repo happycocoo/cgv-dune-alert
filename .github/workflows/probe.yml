@@ -1,0 +1,34 @@
+name: probe (임시 진단)
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install playwright==1.47.0 && python -m playwright install --with-deps chromium
+      - name: probe
+        run: |
+          cat > p.py <<'PY'
+          import re
+          from playwright.sync_api import sync_playwright
+          urls = [
+            "https://search.naver.com/search.naver?query=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C",
+            "https://m.search.naver.com/search.naver?query=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C",
+            "https://search.daum.net/search?q=CGV%20%EC%84%BC%ED%85%80%EC%8B%9C%ED%8B%B0%20%EC%83%81%EC%98%81%EC%8B%9C%EA%B0%84%ED%91%9C",
+            "https://www.cgv.co.kr/",
+          ]
+          with sync_playwright() as p:
+              b = p.chromium.launch(); pg = b.new_page(locale="ko-KR")
+              for u in urls:
+                  try:
+                      r = pg.goto(u, wait_until="networkidle", timeout=45000)
+                      t = re.sub(r"\s+", " ", pg.inner_text("body"))
+                      i = t.find("상영")
+                      print("=====", u[:60], r.status if r else None, len(t))
+                      print(t[:300]); print("...", t[max(0,i-100):i+900] if i>=0 else "(no 상영)")
+                  except Exception as e:
+                      print("=====", u[:60], "ERR", e)
+              b.close()
+          PY
+          python p.py
