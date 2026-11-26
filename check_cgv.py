@@ -34,7 +34,7 @@ def check():
         pg.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
 
         dates = pg.eval_on_selector_all(
-            'a[href*="datefilter="]',
+            'a[href*="datefilter"]',
             "els => els.map(e => [e.getAttribute('href').match(/datefilter%3D([0-9-]+)|datefilter=([0-9-]+)/), e.innerText])",
         )
         date_list = []
