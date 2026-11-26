@@ -1,0 +1,54 @@
+name: CGV 센텀 듄3 IMAX 예매 알림
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # 30분마다 (GitHub 사정에 따라 몇 분 지연될 수 있음)
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "테스트 모드 (결과와 상관없이 카톡 발송 + 페이지 덤프 저장)"
+        type: boolean
+        default: true
+
+permissions:
+  actions: write   # 오픈 감지 후 워크플로 자동 비활성화용
+  contents: read
+
+concurrency:
+  group: cgv-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install playwright==1.47.0 requests
+          python -m playwright install --with-deps chromium
+      - name: Check CGV
+        id: check
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+          TARGET_DATE: "20270101"
+          THEATER_CODE: "0089"
+          DEBUG: ${{ inputs.debug || 'false' }}
+        run: python check_cgv.py
+      - name: Upload page dump (debug)
+        if: ${{ inputs.debug }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgv-dump
+          path: dump/
+      - name: 알림 보낸 뒤 자동 중지 (중복 알림 방지)
+        if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable "${{ github.workflow }}" --repo "${{ github.repository }}"
